@@ -1,5 +1,5 @@
 # geocod.io Node library [![NPM version][npm-image]][npm-url]
-> Library for performing forward and reverse address geocoding for addresses or coordinates in the US and Canada.
+> Library for performing forward and reverse address geocoding for addresses or coordinates in the US and Canada, with support for distance calculations.
 
 <!-- toc -->
 
@@ -10,6 +10,10 @@
   * [Field appends](#field-appends)
   * [Address components](#address-components)
   * [Limit results](#limit-results)
+  * [Distance calculation](#distance-calculation)
+  * [Distance matrix](#distance-matrix)
+  * [Async distance jobs](#async-distance-jobs)
+  * [Geocoding with distance](#geocoding-with-distance)
   * [Lists](#lists)
      * [Create A List](#create-a-list)
      * [Get List Status](#get-list-status)
@@ -229,6 +233,410 @@ geocoder.geocode('1109 N Highland St, Arlington, VA', [], 1)
 geocoder.reverse('38.9002898,-76.9990361', ['timezone'], 5)
   .then(response => { ... })
   .catch(err => { ... });
+```
+
+### Distance calculations
+
+Calculate distances from a single origin to multiple destinations, or compute full distance matrices.
+
+#### Coordinate format with custom IDs
+
+You can add custom identifiers to coordinates using the `lat,lng,id` format. The ID will be returned in the response, making it easy to match results back to your data:
+
+```javascript
+// String format with ID
+'37.7749,-122.4194,warehouse_1'
+
+// Array format with ID
+[37.7749, -122.4194, 'warehouse_1']
+
+// Object format with ID
+{ lat: 37.7749, lng: -122.4194, id: 'warehouse_1' }
+
+// Using the Coordinate class
+new Coordinate(37.7749, -122.4194, 'warehouse_1')
+
+// The ID is returned in the response:
+/*
+{
+  "query": "37.7749,-122.4194,warehouse_1",
+  "location": [37.7749, -122.4194],
+  "id": "warehouse_1",
+  "distance_miles": 3.2,
+  "distance_km": 5.1
+}
+*/
+```
+
+#### Distance mode and units
+
+The SDK provides enums for type-safe distance configuration:
+
+```javascript
+const {
+  Geocodio,
+  Coordinate,
+  DistanceMode,
+  DistanceUnits,
+  DistanceOrderBy,
+  DistanceSortOrder
+} = require('geocodio-library-node');
+
+// Available modes
+DistanceMode.Straightline  // Default - great-circle (as the crow flies)
+DistanceMode.Driving       // Road network routing with duration
+DistanceMode.Haversine     // Alias for Straightline
+
+// Available units
+DistanceUnits.Miles        // Default
+DistanceUnits.Kilometers   // or DistanceUnits.Km
+
+// Sorting options
+DistanceOrderBy.Distance   // Default
+DistanceOrderBy.Duration
+
+DistanceSortOrder.Asc      // Default
+DistanceSortOrder.Desc
+```
+
+> **Note:** The default mode is `straightline` (great-circle distance). Use `DistanceMode.Driving` if you need road network routing with duration estimates.
+
+#### Add distance to geocoding requests
+
+You can add distance calculations to existing geocode or reverse geocode requests. Each geocoded result will include a `destinations` array with distances to each destination.
+
+```javascript
+const geocoder = new Geocodio('YOUR_API_KEY');
+
+// Geocode an address and calculate distances to store locations
+geocoder.geocode(
+    '1600 Pennsylvania Ave NW, Washington DC',
+    [],     // fields
+    null,   // limit
+    {       // distance options
+      destinations: [
+        '38.9072,-77.0369,store_dc',
+        '39.2904,-76.6122,store_baltimore',
+        '39.9526,-75.1652,store_philly'
+      ],
+      distanceMode: DistanceMode.Driving,
+      distanceUnits: DistanceUnits.Miles
+    }
+  )
+  .then(response => {
+    console.log(response.results[0].destinations);
+    /*
+    [
+      {
+        "query": "38.9072,-77.0369,store_dc",
+        "location": [38.9072, -77.0369],
+        "id": "store_dc",
+        "distance_miles": 0.8,
+        "distance_km": 1.3,
+        "duration_seconds": 180
+      },
+      ...
+    ]
+    */
+  });
+
+// Reverse geocode with distances
+geocoder.reverse(
+    '38.8977,-77.0365',
+    [],
+    null,
+    {
+      destinations: ['38.9072,-77.0369,capitol', '38.8895,-77.0353,monument'],
+      distanceMode: DistanceMode.Straightline
+    }
+  )
+  .then(response => { ... });
+
+// With filtering - find nearest 3 stores within 50 miles
+geocoder.geocode(
+    '1600 Pennsylvania Ave NW, Washington DC',
+    [],
+    null,
+    {
+      destinations: [
+        '38.9072,-77.0369,store_1',
+        '39.2904,-76.6122,store_2',
+        '39.9526,-75.1652,store_3',
+        '40.7128,-74.0060,store_4'
+      ],
+      distanceMode: DistanceMode.Driving,
+      distanceMaxResults: 3,
+      distanceMaxDistance: 50.0,
+      distanceOrderBy: DistanceOrderBy.Distance,
+      distanceSortOrder: DistanceSortOrder.Asc
+    }
+  )
+  .then(response => { ... });
+```
+
+#### Single origin to multiple destinations
+
+```javascript
+const geocoder = new Geocodio('YOUR_API_KEY');
+
+// Calculate distances from one origin to multiple destinations
+geocoder.distance(
+    '37.7749,-122.4194,headquarters',  // Origin with ID
+    [
+      '37.7849,-122.4094,customer_a',
+      '37.7949,-122.3994,customer_b',
+      '37.8049,-122.4294,customer_c'
+    ]
+  )
+  .then(response => {
+    console.log(response);
+    /*
+    {
+      "origin": {
+        "query": "37.7749,-122.4194,headquarters",
+        "location": [37.7749, -122.4194],
+        "id": "headquarters"
+      },
+      "destinations": [
+        {
+          "query": "37.7849,-122.4094,customer_a",
+          "location": [37.7849, -122.4094],
+          "id": "customer_a",
+          "distance_miles": 0.9,
+          "distance_km": 1.4
+        },
+        ...
+      ]
+    }
+    */
+  });
+
+// Use driving mode for road network routing (includes duration)
+geocoder.distance(
+    '37.7749,-122.4194',
+    ['37.7849,-122.4094'],
+    { mode: DistanceMode.Driving }
+  )
+  .then(response => {
+    console.log(response.destinations[0].duration_seconds); // e.g., 180
+  });
+
+// With all filtering and sorting options
+geocoder.distance(
+    '37.7749,-122.4194,warehouse',
+    [
+      '37.7849,-122.4094,store_1',
+      '37.7949,-122.3994,store_2',
+      '37.8049,-122.4294,store_3'
+    ],
+    {
+      mode: DistanceMode.Driving,
+      units: DistanceUnits.Kilometers,
+      maxResults: 2,
+      maxDistance: 10.0,
+      orderBy: DistanceOrderBy.Distance,
+      sortOrder: DistanceSortOrder.Asc
+    }
+  )
+  .then(response => { ... });
+
+// Using Coordinate class
+const origin = new Coordinate(37.7749, -122.4194, 'warehouse');
+const destinations = [
+  new Coordinate(37.7849, -122.4094, 'store_1'),
+  new Coordinate(37.7949, -122.3994, 'store_2')
+];
+
+geocoder.distance(origin, destinations)
+  .then(response => { ... });
+
+// Array format for coordinates (with or without ID)
+geocoder.distance(
+    [37.7749, -122.4194],                    // Without ID
+    [[37.7849, -122.4094, 'dest_1']]         // With ID as third element
+  )
+  .then(response => { ... });
+```
+
+#### Distance matrix (multiple origins × destinations)
+
+```javascript
+// Calculate full distance matrix with custom IDs
+geocoder.distanceMatrix(
+    [
+      '37.7749,-122.4194,warehouse_sf',
+      '37.8049,-122.4294,warehouse_oak'
+    ],
+    [
+      '37.7849,-122.4094,customer_1',
+      '37.7949,-122.3994,customer_2'
+    ]
+  )
+  .then(response => {
+    console.log(response);
+    /*
+    {
+      "mode": "driving",
+      "results": [
+        {
+          "origin": {
+            "query": "37.7749,-122.4194,warehouse_sf",
+            "location": [37.7749, -122.4194],
+            "id": "warehouse_sf"
+          },
+          "destinations": [
+            {
+              "query": "37.7849,-122.4094,customer_1",
+              "location": [37.7849, -122.4094],
+              "id": "customer_1",
+              "distance_miles": 0.9,
+              "distance_km": 1.4
+            },
+            ...
+          ]
+        },
+        {
+          "origin": { ..., "id": "warehouse_oak" },
+          "destinations": [...]
+        }
+      ]
+    }
+    */
+  });
+
+// With driving mode and kilometers
+geocoder.distanceMatrix(
+    ['37.7749,-122.4194'],
+    ['37.7849,-122.4094'],
+    { mode: DistanceMode.Driving, units: DistanceUnits.Kilometers }
+  )
+  .then(response => { ... });
+
+// Using object format
+const origins = [
+  { lat: 37.7749, lng: -122.4194, id: 'warehouse_sf' },
+  { lat: 37.8049, lng: -122.4294, id: 'warehouse_oak' }
+];
+
+const destinations = [
+  { lat: 37.7849, lng: -122.4094, id: 'customer_1' },
+  { lat: 37.7949, lng: -122.3994, id: 'customer_2' }
+];
+
+geocoder.distanceMatrix(origins, destinations)
+  .then(response => { ... });
+```
+
+#### Nearest mode (find closest destinations)
+
+```javascript
+// Find up to 2 nearest destinations from each origin
+geocoder.distanceMatrix(
+    ['37.7749,-122.4194'],
+    ['37.7849,-122.4094', '37.7949,-122.3994', '37.8049,-122.4294'],
+    { maxResults: 2 }
+  )
+  .then(response => { ... });
+
+// Filter by maximum distance (in miles or km depending on units)
+geocoder.distanceMatrix(
+    ['37.7749,-122.4194'],
+    [...destinations],
+    { maxDistance: 2.0 }
+  )
+  .then(response => { ... });
+
+// Filter by minimum and maximum distance
+geocoder.distanceMatrix(
+    ['37.7749,-122.4194'],
+    [...destinations],
+    { minDistance: 1.0, maxDistance: 10.0 }
+  )
+  .then(response => { ... });
+
+// Filter by duration (seconds, driving mode only)
+geocoder.distanceMatrix(
+    ['37.7749,-122.4194'],
+    [...destinations],
+    {
+      mode: DistanceMode.Driving,
+      maxDuration: 300,  // 5 minutes
+      minDuration: 60    // 1 minute minimum
+    }
+  )
+  .then(response => { ... });
+
+// Sort by duration descending
+geocoder.distanceMatrix(
+    ['37.7749,-122.4194'],
+    [...destinations],
+    {
+      mode: DistanceMode.Driving,
+      maxResults: 5,
+      orderBy: DistanceOrderBy.Duration,
+      sortOrder: DistanceSortOrder.Desc
+    }
+  )
+  .then(response => { ... });
+```
+
+#### Async distance matrix jobs
+
+For large distance matrix calculations, use async jobs that process in the background.
+
+```javascript
+// Create a new distance matrix job
+geocoder.createDistanceMatrixJob(
+    'My Distance Calculation',
+    ['37.7749,-122.4194', '37.8049,-122.4294'],
+    ['37.7849,-122.4094', '37.7949,-122.3994'],
+    {
+      mode: DistanceMode.Driving,
+      units: DistanceUnits.Miles,
+      callbackUrl: 'https://example.com/webhook'  // Optional
+    }
+  )
+  .then(response => {
+    console.log(response);
+    // { id: 123, status: 'ENQUEUED', total_calculations: 4 }
+  });
+
+// Or use list IDs from previously uploaded lists
+geocoder.createDistanceMatrixJob(
+    'Distance from List',
+    12345,       // Origins list ID
+    67890,       // Destinations list ID
+    { mode: DistanceMode.Straightline }
+  )
+  .then(response => { ... });
+
+// Check job status
+geocoder.distanceMatrixJobStatus(123)
+  .then(response => {
+    console.log(response.data.status);   // 'ENQUEUED', 'PROCESSING', 'COMPLETED', or 'FAILED'
+    console.log(response.data.progress); // 0-100
+  });
+
+// List all jobs (paginated)
+geocoder.distanceMatrixJobs()
+  .then(response => { ... });
+
+geocoder.distanceMatrixJobs(2)  // Page 2
+  .then(response => { ... });
+
+// Get results when complete (same format as distanceMatrix response)
+geocoder.getDistanceMatrixJobResults(123)
+  .then(response => {
+    console.log(response.results);
+  });
+
+// Or download to a file for very large results
+geocoder.downloadDistanceMatrixJob(123, 'results.json')
+  .then(() => console.log('Downloaded!'));
+
+// Delete a job
+geocoder.deleteDistanceMatrixJob(123)
+  .then(() => console.log('Deleted!'));
 ```
 
 ### Lists
